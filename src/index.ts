@@ -1,15 +1,12 @@
 /**
  * Image Forge — Cloudflare Workers AI Text-to-Image
  *
- * Fixed version (March 2026):
- * • Model-aware parameters (steps vs num_steps, guidance, negative_prompt)
- * • Correct response handling: FLUX returns base64, SDXL returns ReadableStream
- * • Dynamic sliders in UI (steps range, hide unsupported controls for FLUX)
- * • Better error handling + timeout protection
- * • Defaults to fast FLUX.1-schnell (free tier friendly)
- *
- * Replace your entire src/index.ts with this file and run:
- * npm run deploy
+ * CORRECTED VERSION (March 2026):
+ * • Added full seed support (was missing)
+ * • Fixed SDXL Content-Type to image/png (was jpeg — images wouldn't display)
+ * • SDXL max steps corrected to 20 (official limit)
+ * • Initial model highlighting + safer base64 handling
+ * • Defaults to fast FLUX.1-schnell
  */
 
 const MODELS = {
@@ -27,8 +24,8 @@ const MODELS = {
   sdxl: {
     id: '@cf/stabilityai/stable-diffusion-xl-base-1.0',
     name: 'Stable Diffusion XL',
-    desc: 'Classic • 10–30 steps • Full control',
-    maxSteps: 30,
+    desc: 'Classic • 10–20 steps • Full control',
+    maxSteps: 20,
     defaultSteps: 20,
     supportsGuidance: true,
     supportsNegative: true,
@@ -72,7 +69,6 @@ const HTML = `<!DOCTYPE html>
     img { max-width: 100%; border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
     .image-toolbar { margin-top: 1rem; display: flex; gap: 1rem; }
 
-    /* New styles from earlier */
     .aspect-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .aspect-btn { background: var(--surface); border: 1px solid var(--border); padding: 0.4rem 0.8rem;
       border-radius: var(--radius); font-size: 0.75rem; cursor: pointer; transition: all 0.2s; }
@@ -174,7 +170,7 @@ const HTML = `<!DOCTYPE html>
     const modelCards = document.getElementById('model-cards');
     Object.values(MODELS).forEach(m => {
       const card = document.createElement('div');
-      card.innerHTML = \`<div style="padding:0.8rem;border:1px solid var(--border);border-radius:8px;margin:0.5rem 0;cursor:pointer;" onclick="selectModel('${m.id}')">
+      card.innerHTML = \`<div class="model-card" data-id="\${m.id}" style="padding:0.8rem;border:2px solid var(--border);border-radius:8px;margin:0.5rem 0;cursor:pointer;">
         <strong>\${m.name}</strong><br><small>\${m.desc}</small>
       </div>\`;
       modelCards.appendChild(card.firstChild);
@@ -183,7 +179,9 @@ const HTML = `<!DOCTYPE html>
     function selectModel(id) {
       selectedModel = Object.values(MODELS).find(m => m.id === id);
       updateParamVisibility();
-      document.querySelectorAll('#model-cards > div').forEach(el => el.style.borderColor = el.textContent.includes(selectedModel.name) ? 'var(--accent)' : 'var(--border)');
+      document.querySelectorAll('.model-card').forEach(el => {
+        el.style.borderColor = (el.dataset.id === id) ? 'var(--accent)' : 'var(--border)';
+      });
     }
 
     function updateParamVisibility() {
@@ -328,6 +326,7 @@ const HTML = `<!DOCTYPE html>
 
     // Initial setup
     updateParamVisibility();
+    selectModel(MODELS.flux.id); // ← ensures initial highlight
   </script>
 </body>
 </html>`;
@@ -341,23 +340,22 @@ export default {
 
     if (request.method === 'POST' && request.url.endsWith('/generate')) {
       try {
-        const { model, prompt, steps, guidance, negative_prompt, width, height } = await request.json();
+        const { model, prompt, steps, guidance, negative_prompt, width, height, seed } = await request.json();
 
         if (!prompt) throw new Error('Prompt is required');
 
-        // Find model config
         const modelConfig = Object.values(MODELS).find(m => m.id === model);
         if (!modelConfig) throw new Error('Unknown model');
 
-        // Build parameters correctly per model
-        const params = { prompt };
+        const params: any = { prompt };
 
+        // Model-specific parameters
         if (modelConfig.id.includes('flux')) {
           params.steps = Math.max(1, Math.min(steps || modelConfig.defaultSteps, modelConfig.maxSteps));
         } else {
           params.num_steps = Math.max(1, Math.min(steps || modelConfig.defaultSteps, modelConfig.maxSteps));
           if (guidance) params.guidance = parseFloat(guidance);
-          if (negative_prompt) params.negative_prompt = negative_prompt;
+          if (negative_prompt?.trim()) params.negative_prompt = negative_prompt;
         }
 
         if (modelConfig.supportsSize && width && height) {
@@ -365,20 +363,26 @@ export default {
           params.height = Math.max(256, Math.min(height, 2048));
         }
 
-        // Run inference
+        // FIXED: Seed support for both FLUX and SDXL
+        if (seed !== undefined && seed !== null && seed !== '') {
+          params.seed = Number(seed);
+        }
+
         const result = await env.AI.run(model, params);
 
-        let imageData;
-        let contentType = 'image/jpeg';
+        let imageData: BodyInit;
+        let contentType: string;
 
         if (modelConfig.responseType === 'base64') {
-          // FLUX returns { image: "base64string" }
+          // FLUX returns { image: "base64..." }
           const base64 = result.image;
+          if (!base64) throw new Error('Invalid FLUX response');
           imageData = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-        } else {
-          // SDXL returns ReadableStream
-          imageData = result;
           contentType = 'image/jpeg';
+        } else {
+          // SDXL returns ReadableStream (PNG)
+          imageData = result;
+          contentType = 'image/png';
         }
 
         return new Response(imageData, {
@@ -388,7 +392,7 @@ export default {
           }
         });
 
-      } catch (err) {
+      } catch (err: any) {
         return new Response('Generation failed: ' + err.message, { status: 500 });
       }
     }
