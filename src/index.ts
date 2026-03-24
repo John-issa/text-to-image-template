@@ -778,8 +778,8 @@ export default {
       const params = {
         prompt,
         num_steps: Math.min(Math.max(parseInt(steps) || 4, 1), 20),
-        width:     Math.min(Math.max(parseInt(width)  || 1024, 256), 1024),
-        height:    Math.min(Math.max(parseInt(height) || 1024, 256), 1024),
+        width:  Math.min(Math.max(parseInt(width)  || 512, 256), 768),
+        height: Math.min(Math.max(parseInt(height) || 512, 256), 768),
       };
 
       if (guidance)         params.guidance        = parseFloat(guidance);
@@ -789,9 +789,15 @@ export default {
         const response = await env.AI.run(model, params);
 
         // Workers AI returns the image as a ReadableStream or ArrayBuffer
-        const imageData = response instanceof ReadableStream
-          ? await new Response(response).arrayBuffer()
-          : response;
+        let imageData: ArrayBuffer;
+
+        if (response instanceof ReadableStream) {
+          imageData = await new Response(response).arrayBuffer();
+        } else if (response instanceof Response) {
+          imageData = await response.arrayBuffer();
+        } else {
+          imageData = response as ArrayBuffer;
+        }
 
         return new Response(imageData, {
           headers: { 'Content-Type': 'image/png' },
