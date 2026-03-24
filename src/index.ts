@@ -11,7 +11,7 @@ function renderHTML(): string {
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Workers AI · Image Studio</title>
+<title>Image AI · Nup Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
@@ -311,7 +311,7 @@ function renderHTML(): string {
 <body>
 <div class="app">
   <header>
-    <div class="logo">Image Studio <span>· Workers AI</span></div>
+    <div class="logo">Nup Studio <span>· Image AI</span></div>
   </header>
 
   <div class="main">
