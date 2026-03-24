@@ -1,299 +1,600 @@
-/**
- * Image Forge — Cloudflare Workers AI Text-to-Image
- *
- * Fixed version (March 2026):
- * • Model-aware parameters (steps vs num_steps, guidance, negative_prompt)
- * • Correct response handling: FLUX returns base64, SDXL returns ReadableStream
- * • Dynamic sliders in UI (steps range, hide unsupported controls for FLUX)
- * • Better error handling + timeout protection
- * • Defaults to fast FLUX.1-schnell (free tier friendly)
- *
- * Replace your entire src/index.ts with this file and run:
- * npm run deploy
- */
+export interface Env {
+  AI: Ai;
+}
 
-const MODELS = {
-  flux: {
-    id: '@cf/black-forest-labs/flux-1-schnell',
-    name: 'FLUX.1 [schnell]',
-    desc: 'Fastest • 4–8 steps • Best quality',
-    maxSteps: 8,
-    defaultSteps: 4,
-    supportsGuidance: false,
-    supportsNegative: false,
-    supportsSize: false,
-    responseType: 'base64' as const
+// ─── Model catalog ───────────────────────────────────────────────────────────
+// Sorted roughly: best free-tier value → higher quality / paid
+const MODELS: { id: string; label: string; tag: string; tagColor: string; note: string }[] = [
+  {
+    id: "@cf/black-forest-labs/flux-1-schnell",
+    label: "FLUX.1 Schnell",
+    tag: "Free · Fast",
+    tagColor: "#22c55e",
+    note: "12B params · great all-rounder · recommended starting point",
   },
-  sdxl: {
-    id: '@cf/stabilityai/stable-diffusion-xl-base-1.0',
-    name: 'Stable Diffusion XL',
-    desc: 'Classic • 10–30 steps • Full control',
-    maxSteps: 30,
-    defaultSteps: 20,
-    supportsGuidance: true,
-    supportsNegative: true,
-    supportsSize: true,
-    responseType: 'stream' as const
-  }
-} as const;
+  {
+    id: "@cf/lykon/dreamshaper-8-lcm",
+    label: "Dreamshaper 8 LCM",
+    tag: "Free · Artistic",
+    tagColor: "#22c55e",
+    note: "Stylised / painterly outputs · very fast LCM steps",
+  },
+  {
+    id: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+    label: "Stable Diffusion XL",
+    tag: "Free",
+    tagColor: "#22c55e",
+    note: "Classic SDXL · solid photorealism · reliable",
+  },
+  {
+    id: "@cf/bytedance/stable-diffusion-xl-lightning",
+    label: "SDXL Lightning",
+    tag: "Free · Ultra-fast",
+    tagColor: "#22c55e",
+    note: "2-step distilled SDXL · instant previews",
+  },
+  {
+    id: "@cf/black-forest-labs/flux-2-klein-4b",
+    label: "FLUX.2 Klein 4B",
+    tag: "Paid · Edit",
+    tagColor: "#f59e0b",
+    note: "Unified generation + editing · interactive quality",
+  },
+  {
+    id: "@cf/black-forest-labs/flux-2-klein-9b",
+    label: "FLUX.2 Klein 9B",
+    tag: "Paid · Premium",
+    tagColor: "#f59e0b",
+    note: "State-of-the-art quality · real-time latency",
+  },
+  {
+    id: "@cf/black-forest-labs/flux-2-dev",
+    label: "FLUX.2 Dev",
+    tag: "Paid · High-res",
+    tagColor: "#f59e0b",
+    note: "Multi-reference support · highest detail",
+  },
+];
 
-const HTML = `<!DOCTYPE html>
+// ─── HTML shell ───────────────────────────────────────────────────────────────
+function renderHTML(modelsJson: string): string {
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Image Forge</title>
+<title>Workers AI · Image Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
 <style>
-  /* (Original beautiful styling from your repo — kept 100% intact) */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
   :root {
-    --bg:       #0b0c0e;
-    --surface:  #131519;
-    --border:   #222529;
-    --accent:   #e8ff47;
-    --accent2:  #ff6b35;
-    --text:     #e8e9eb;
-    --muted:    #6b7280;
-    --radius:   6px;
+    --bg:        #0c0c0f;
+    --surface:   #141418;
+    --border:    #232329;
+    --border-hi: #3a3a44;
+    --text:      #e8e8ed;
+    --muted:     #888892;
+    --accent:    #e8d5b7;
+    --accent2:   #c4a882;
+    --green:     #22c55e;
+    --amber:     #f59e0b;
+    --danger:    #f87171;
+    --radius:    12px;
+    --radius-lg: 20px;
   }
-  body { background: var(--bg); color: var(--text); font-family: 'Syne', sans-serif; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
-  body::before { content: ''; position: fixed; inset: 0; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E"); pointer-events: none; z-index: 0; }
-  /* ... (all your original CSS continues here — I kept it exactly as in your repo) ... */
-  /* For brevity in this paste, the full CSS/JS is included below. In real file it's all here. */
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  /* ── Layout ── */
+  .app {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 100vh;
+  }
+
+  header {
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo {
+    font-family: 'Instrument Serif', serif;
+    font-size: 22px;
+    font-style: italic;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+
+  .logo span { color: var(--muted); font-style: normal; font-size: 13px; font-family: 'DM Mono', monospace; margin-left: 8px; }
+
+  .main {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    overflow: hidden;
+    height: calc(100vh - 65px);
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    padding: 28px 24px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  label {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 130px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    padding: 14px 16px;
+    resize: vertical;
+    transition: border-color 0.15s;
+    line-height: 1.7;
+  }
+  textarea:focus { outline: none; border-color: var(--border-hi); }
+  textarea::placeholder { color: var(--muted); }
+
+  /* Model cards */
+  .model-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .model-card {
+    cursor: pointer;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+  }
+  .model-card:hover { border-color: var(--border-hi); }
+  .model-card.selected {
+    border-color: var(--accent2);
+    background: #1c1a16;
+  }
+  .model-card input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
+
+  .model-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .model-name { font-size: 13px; font-weight: 500; color: var(--text); }
+  .model-tag {
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
+    border-radius: 99px;
+    border: 1px solid;
+  }
+  .model-note { font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+  /* Generate button */
+  .btn-generate {
+    width: 100%;
+    padding: 14px;
+    background: var(--accent);
+    color: #0c0c0f;
+    border: none;
+    border-radius: var(--radius);
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    text-transform: uppercase;
+  }
+  .btn-generate:hover:not(:disabled) { opacity: 0.88; }
+  .btn-generate:active:not(:disabled) { transform: scale(0.98); }
+  .btn-generate:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Canvas / output ── */
+  .canvas {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 0%, #1a1a22 0%, transparent 70%),
+      var(--bg);
+  }
+
+  /* grid lines background */
+  .canvas::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  .output-wrap {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    max-width: 700px;
+    width: 100%;
+  }
+
+  .placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .placeholder-icon {
+    width: 72px;
+    height: 72px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    background: var(--surface);
+  }
+
+  .placeholder h2 {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 28px;
+    color: var(--text);
+    font-weight: 400;
+  }
+
+  .placeholder p { font-size: 12px; max-width: 280px; }
+
+  #result-img {
+    width: 100%;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    box-shadow: 0 32px 80px rgba(0,0,0,0.7);
+    display: none;
+    animation: fadeIn 0.4s ease;
+  }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: none; } }
+
+  .result-meta {
+    display: none;
+    width: 100%;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 12px;
+    color: var(--muted);
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .btn-dl {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+    text-decoration: none;
+    display: inline-block;
+    white-space: nowrap;
+  }
+  .btn-dl:hover { border-color: var(--border-hi); }
+
+  /* Spinner */
+  .spinner {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .spin-ring {
+    width: 40px;
+    height: 40px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error-box {
+    display: none;
+    width: 100%;
+    padding: 16px 18px;
+    background: #1f1212;
+    border: 1px solid #5a2222;
+    border-radius: var(--radius);
+    color: var(--danger);
+    font-size: 12px;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+  @media (max-width: 768px) {
+    .main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .sidebar { height: auto; }
+    .canvas { min-height: 50vh; }
+  }
 </style>
 </head>
 <body>
-  <!-- Full original UI markup from your repo (model cards, sliders, etc.) -->
+<div class="app">
   <header>
-    <div class="logo-mark"></div>
-    <h1>Image <span>Forge</span></h1>
-    <div class="badge">Workers AI</div>
+    <div class="logo">Image Studio <span>· Workers AI</span></div>
   </header>
-  <main>
-    <div class="panel">
-      <!-- Prompt -->
-      <div class="field">
-        <label>PROMPT</label>
-        <textarea id="prompt" placeholder="A cyberpunk cat wearing sunglasses...">cyberpunk cat</textarea>
+
+  <div class="main">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div>
+        <label for="prompt-input">Prompt</label>
+        <textarea
+          id="prompt-input"
+          placeholder="a photo of an astronaut riding a horse on mars, cinematic lighting, 8k"
+          autocomplete="off"
+          spellcheck="false"
+        ></textarea>
       </div>
 
-      <!-- Model Selection -->
-      <div class="field">
-        <label>MODEL</label>
-        <div class="model-grid" id="model-grid">
-          <!-- Populated by JS -->
-        </div>
+      <div>
+        <label>Model</label>
+        <div class="model-list" id="model-list"></div>
       </div>
 
-      <!-- Steps -->
-      <div class="field">
-        <label id="steps-label">STEPS <span id="steps-value">4</span></label>
-        <input type="range" id="steps" min="1" max="8" value="4" />
-      </div>
-
-      <!-- Guidance (hidden for FLUX) -->
-      <div class="field" id="guidance-field">
-        <label>GUIDANCE <span id="guidance-value">7.5</span></label>
-        <input type="range" id="guidance" min="1" max="20" step="0.1" value="7.5" />
-      </div>
-
-      <!-- Negative Prompt (hidden for FLUX) -->
-      <div class="field" id="negative-field">
-        <label>NEGATIVE PROMPT</label>
-        <textarea id="negative" placeholder="blurry, ugly..."></textarea>
-      </div>
-
-      <!-- Size (hidden for FLUX) -->
-      <div class="row-2" id="size-fields">
-        <div class="field">
-          <label>WIDTH</label>
-          <input type="number" id="width" value="1024" />
-        </div>
-        <div class="field">
-          <label>HEIGHT</label>
-          <input type="number" id="height" value="1024" />
-        </div>
-      </div>
-
-      <button id="generate">GENERATE IMAGE</button>
-      <div id="status"></div>
+      <button class="btn-generate" id="btn-gen" onclick="generate()">
+        Generate image
+      </button>
     </div>
 
-    <div class="preview">
-      <img id="result" alt="Generated image" />
+    <!-- Canvas -->
+    <div class="canvas">
+      <div class="output-wrap">
+        <!-- Placeholder -->
+        <div class="placeholder" id="placeholder">
+          <div class="placeholder-icon">✦</div>
+          <h2>Your image will appear here</h2>
+          <p>Enter a prompt and pick a model to get started. Free-tier models run on 10k neurons/day.</p>
+        </div>
+
+        <!-- Spinner -->
+        <div class="spinner" id="spinner">
+          <div class="spin-ring"></div>
+          <span id="spinner-label">Generating…</span>
+        </div>
+
+        <!-- Error -->
+        <div class="error-box" id="error-box"></div>
+
+        <!-- Result -->
+        <img id="result-img" alt="Generated image" />
+        <div class="result-meta" id="result-meta">
+          <span id="meta-text"></span>
+          <a id="dl-link" class="btn-dl" download="image.png">↓ Download</a>
+        </div>
+      </div>
     </div>
-  </main>
+  </div>
+</div>
 
 <script>
-  // === DYNAMIC UI LOGIC (updated for model-specific sliders) ===
-  const models = ${JSON.stringify(MODELS)};
-  let currentModelKey = 'flux';
+const MODELS = ${modelsJson};
+let selectedModel = MODELS[0].id;
+let genStart = 0;
 
-  function renderModels() {
-    const grid = document.getElementById('model-grid');
-    grid.innerHTML = '';
-    Object.keys(models).forEach(key => {
-      const m = models[key];
-      const card = document.createElement('div');
-      card.className = \`model-card \${key === currentModelKey ? 'active' : ''}\`;
-      card.innerHTML = \`
-        <div class="model-radio"></div>
-        <div class="model-info">
-          <div class="model-name">\${m.name}</div>
-          <div class="model-desc">\${m.desc}</div>
-        </div>
-      \`;
-      card.onclick = () => {
-        currentModelKey = key;
-        renderModels();
-        updateSlidersForModel();
-      };
-      grid.appendChild(card);
+// Render model cards
+(function buildModelList() {
+  const list = document.getElementById('model-list');
+  MODELS.forEach((m, i) => {
+    const card = document.createElement('label');
+    card.className = 'model-card' + (i === 0 ? ' selected' : '');
+    card.innerHTML = \`
+      <input type="radio" name="model" value="\${m.id}" \${i === 0 ? 'checked' : ''} />
+      <div class="model-header">
+        <span class="model-name">\${m.label}</span>
+        <span class="model-tag" style="color:\${m.tagColor};border-color:\${m.tagColor}40">\${m.tag}</span>
+      </div>
+      <div class="model-note">\${m.note}</div>
+    \`;
+    card.addEventListener('click', () => {
+      document.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      selectedModel = m.id;
     });
-  }
+    list.appendChild(card);
+  });
+})();
 
-  function updateSlidersForModel() {
-    const m = models[currentModelKey];
-    const stepsSlider = document.getElementById('steps');
-    stepsSlider.max = m.maxSteps;
-    stepsSlider.value = m.defaultSteps;
-    document.getElementById('steps-value').textContent = m.defaultSteps;
-    document.getElementById('steps-label').textContent = m.id.includes('flux') ? 'STEPS ' : 'NUM STEPS ';
+// Allow Ctrl+Enter to generate
+document.getElementById('prompt-input').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') generate();
+});
 
-    // Hide unsupported controls for FLUX
-    document.getElementById('guidance-field').style.display = m.supportsGuidance ? 'flex' : 'none';
-    document.getElementById('negative-field').style.display = m.supportsNegative ? 'flex' : 'none';
-    document.getElementById('size-fields').style.display = m.supportsSize ? 'grid' : 'none';
-  }
+async function generate() {
+  const prompt = document.getElementById('prompt-input').value.trim();
+  if (!prompt) { alert('Please enter a prompt.'); return; }
 
-  // Slider live value display
-  function setupSliders() {
-    const steps = document.getElementById('steps');
-    const stepsVal = document.getElementById('steps-value');
-    steps.addEventListener('input', () => stepsVal.textContent = steps.value);
+  const btn = document.getElementById('btn-gen');
+  btn.disabled = true;
 
-    const guidance = document.getElementById('guidance');
-    const guidanceVal = document.getElementById('guidance-value');
-    guidance.addEventListener('input', () => guidanceVal.textContent = parseFloat(guidance.value).toFixed(1));
-  }
+  // Show spinner, hide others
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('result-img').style.display = 'none';
+  document.getElementById('result-meta').style.display = 'none';
+  document.getElementById('error-box').style.display = 'none';
 
-  // Generate
-  async function generate() {
-    const status = document.getElementById('status');
-    const resultImg = document.getElementById('result');
-    status.textContent = 'Generating... (this can take 3–30 seconds)';
+  const spinner = document.getElementById('spinner');
+  spinner.style.display = 'flex';
+  document.getElementById('spinner-label').textContent = 'Generating with ' + selectedModel.split('/').pop() + '…';
+  genStart = Date.now();
 
-    const prompt = document.getElementById('prompt').value.trim();
-    if (!prompt) return alert('Enter a prompt!');
+  try {
+    const res = await fetch('/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, model: selectedModel }),
+    });
 
-    const m = models[currentModelKey];
-    const body = {
-      model: m.id,
-      prompt,
-      steps: parseInt(document.getElementById('steps').value),
-      guidance: m.supportsGuidance ? parseFloat(document.getElementById('guidance').value) : undefined,
-      negative_prompt: m.supportsNegative ? document.getElementById('negative').value.trim() : undefined,
-      width: m.supportsSize ? parseInt(document.getElementById('width').value) : undefined,
-      height: m.supportsSize ? parseInt(document.getElementById('height').value) : undefined
-    };
-
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 45000);
-
-      const res = await fetch('/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeout);
-
-      if (!res.ok) throw new Error(await res.text());
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      resultImg.src = url;
-      status.textContent = '✅ Done!';
-    } catch (err) {
-      status.textContent = '❌ ' + (err.message.includes('abort') ? 'Request timed out' : err.message);
-      console.error(err);
+    if (!res.ok) {
+      const msg = await res.text();
+      throw new Error(msg || res.statusText);
     }
-  }
 
-  document.getElementById('generate').addEventListener('click', generate);
-  renderModels();
-  updateSlidersForModel();
-  setupSliders();
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const elapsed = ((Date.now() - genStart) / 1000).toFixed(1);
+
+    const img = document.getElementById('result-img');
+    img.src = url;
+    img.style.display = 'block';
+
+    const dlLink = document.getElementById('dl-link');
+    dlLink.href = url;
+    dlLink.download = 'workers-ai-' + Date.now() + '.png';
+
+    document.getElementById('meta-text').textContent =
+      selectedModel.split('/').slice(-1)[0] + ' · ' + elapsed + 's';
+
+    const meta = document.getElementById('result-meta');
+    meta.style.display = 'flex';
+
+  } catch (err) {
+    const box = document.getElementById('error-box');
+    box.textContent = '⚠ ' + (err.message || 'An unknown error occurred.');
+    box.style.display = 'block';
+    document.getElementById('placeholder').style.display = 'flex';
+  } finally {
+    spinner.style.display = 'none';
+    btn.disabled = false;
+  }
+}
 </script>
 </body>
 </html>`;
+}
 
-// ====================== BACKEND ======================
+// ─── Worker ───────────────────────────────────────────────────────────────────
 export default {
-  async fetch(request, env) {
-    if (request.method === 'GET') {
-      return new Response(HTML, { headers: { 'Content-Type': 'text/html' } });
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    // ── GET / → serve UI ──────────────────────────────────────────────────
+    if (request.method === "GET" && url.pathname === "/") {
+      return new Response(renderHTML(JSON.stringify(MODELS)), {
+        headers: { "Content-Type": "text/html;charset=UTF-8" },
+      });
     }
 
-    if (request.method === 'POST' && request.url.endsWith('/generate')) {
+    // ── POST /generate → run inference ────────────────────────────────────
+    if (request.method === "POST" && url.pathname === "/generate") {
+      let body: { prompt?: string; model?: string };
       try {
-        const { model, prompt, steps, guidance, negative_prompt, width, height } = await request.json();
+        body = await request.json();
+      } catch {
+        return new Response("Invalid JSON body", { status: 400 });
+      }
 
-        if (!prompt) throw new Error('Prompt is required');
+      const { prompt, model } = body;
 
-        // Find model config
-        const modelConfig = Object.values(MODELS).find(m => m.id === model);
-        if (!modelConfig) throw new Error('Unknown model');
+      if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+        return new Response("prompt is required", { status: 400 });
+      }
 
-        // Build parameters correctly per model
-        const params = { prompt };
+      // Validate model is in our catalog
+      const validIds = MODELS.map((m) => m.id);
+      const modelId = validIds.includes(model ?? "") ? model! : MODELS[0].id;
 
-        if (modelConfig.id.includes('flux')) {
-          params.steps = Math.max(1, Math.min(steps || modelConfig.defaultSteps, modelConfig.maxSteps));
+      try {
+        // @ts-expect-error – AI binding types vary across Wrangler versions
+        const result = await env.AI.run(modelId, { prompt: prompt.trim() });
+
+        // result is ReadableStream or ArrayBuffer depending on CF runtime
+        let imageData: Uint8Array;
+        if (result instanceof ReadableStream) {
+          const reader = result.getReader();
+          const chunks: Uint8Array[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+          }
+          const total = chunks.reduce((s, c) => s + c.length, 0);
+          imageData = new Uint8Array(total);
+          let offset = 0;
+          for (const c of chunks) { imageData.set(c, offset); offset += c.length; }
         } else {
-          params.num_steps = Math.max(1, Math.min(steps || modelConfig.defaultSteps, modelConfig.maxSteps));
-          if (guidance) params.guidance = parseFloat(guidance);
-          if (negative_prompt) params.negative_prompt = negative_prompt;
-        }
-
-        if (modelConfig.supportsSize && width && height) {
-          params.width = Math.max(256, Math.min(width, 2048));
-          params.height = Math.max(256, Math.min(height, 2048));
-        }
-
-        // Run inference
-        const result = await env.AI.run(model, params);
-
-        let imageData;
-        let contentType = 'image/jpeg';
-
-        if (modelConfig.responseType === 'base64') {
-          // FLUX returns { image: "base64string" }
-          const base64 = result.image;
-          imageData = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-        } else {
-          // SDXL returns ReadableStream
-          imageData = result;
-          contentType = 'image/jpeg';
+          imageData = new Uint8Array(result as ArrayBuffer);
         }
 
         return new Response(imageData, {
           headers: {
-            'Content-Type': contentType,
-            'Cache-Control': 'no-store'
-          }
+            "Content-Type": "image/png",
+            "Cache-Control": "no-store",
+          },
         });
-
-      } catch (err) {
-        return new Response('Generation failed: ' + err.message, { status: 500 });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("AI inference error:", msg);
+        return new Response(`Inference failed: ${msg}`, { status: 502 });
       }
     }
 
-    return new Response('Not found', { status: 404 });
-  }
-} satisfies ExportedHandler<Env>;
+    return new Response("Not found", { status: 404 });
+  },
+};
