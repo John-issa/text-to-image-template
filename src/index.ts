@@ -2,41 +2,10 @@ export interface Env {
   AI: Ai;
 }
 
-// ─── Model catalog ───────────────────────────────────────────────────────────
-// Sorted roughly: best free-tier value → higher quality / paid
-const MODELS: { id: string; label: string; tag: string; tagColor: string; note: string }[] = [
-  {
-    id: "@cf/black-forest-labs/flux-1-schnell",
-    label: "FLUX.1 Schnell",
-    tag: "Free · Fast",
-    tagColor: "#22c55e",
-    note: "12B params · great all-rounder · recommended starting point",
-  },
-  {
-    id: "@cf/lykon/dreamshaper-8-lcm",
-    label: "Dreamshaper 8 LCM",
-    tag: "Free · Artistic",
-    tagColor: "#22c55e",
-    note: "Stylised / painterly outputs · very fast LCM steps",
-  },
-  {
-    id: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
-    label: "Stable Diffusion XL",
-    tag: "Free",
-    tagColor: "#22c55e",
-    note: "Classic SDXL · solid photorealism · reliable",
-  },
-  {
-    id: "@cf/bytedance/stable-diffusion-xl-lightning",
-    label: "SDXL Lightning",
-    tag: "Free · Ultra-fast",
-    tagColor: "#22c55e",
-    note: "2-step distilled SDXL · instant previews",
-  },
-];
+const MODEL = "@cf/black-forest-labs/flux-1-schnell";
 
 // ─── HTML shell ───────────────────────────────────────────────────────────────
-function renderHTML(modelsJson: string): string {
+function renderHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -58,8 +27,6 @@ function renderHTML(modelsJson: string): string {
     --muted:     #888892;
     --accent:    #e8d5b7;
     --accent2:   #c4a882;
-    --green:     #22c55e;
-    --amber:     #f59e0b;
     --danger:    #f87171;
     --radius:    12px;
     --radius-lg: 20px;
@@ -74,7 +41,6 @@ function renderHTML(modelsJson: string): string {
     line-height: 1.6;
   }
 
-  /* ── Layout ── */
   .app {
     display: grid;
     grid-template-rows: auto 1fr;
@@ -97,7 +63,13 @@ function renderHTML(modelsJson: string): string {
     letter-spacing: -0.5px;
   }
 
-  .logo span { color: var(--muted); font-style: normal; font-size: 13px; font-family: 'DM Mono', monospace; margin-left: 8px; }
+  .logo span {
+    color: var(--muted);
+    font-style: normal;
+    font-size: 13px;
+    font-family: 'DM Mono', monospace;
+    margin-left: 8px;
+  }
 
   .main {
     display: grid;
@@ -127,7 +99,7 @@ function renderHTML(modelsJson: string): string {
 
   textarea {
     width: 100%;
-    min-height: 130px;
+    min-height: 160px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -142,44 +114,30 @@ function renderHTML(modelsJson: string): string {
   textarea:focus { outline: none; border-color: var(--border-hi); }
   textarea::placeholder { color: var(--muted); }
 
-  /* Model cards */
-  .model-list {
-    display: flex;
-    flex-direction: column;
+  .model-badge {
+    display: inline-flex;
+    align-items: center;
     gap: 8px;
-  }
-
-  .model-card {
-    cursor: pointer;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 12px 14px;
-    transition: border-color 0.15s, background 0.15s;
-    position: relative;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--muted);
   }
-  .model-card:hover { border-color: var(--border-hi); }
-  .model-card.selected {
-    border-color: var(--accent2);
-    background: #1c1a16;
-  }
-  .model-card input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
 
-  .model-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 4px;
+  .model-badge .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #22c55e;
+    flex-shrink: 0;
   }
-  .model-name { font-size: 13px; font-weight: 500; color: var(--text); }
-  .model-tag {
-    font-size: 10px;
-    letter-spacing: 0.05em;
-    padding: 2px 8px;
-    border-radius: 99px;
-    border: 1px solid;
+
+  .model-badge strong {
+    color: var(--text);
+    font-weight: 500;
   }
-  .model-note { font-size: 11px; color: var(--muted); line-height: 1.5; }
 
   /* Generate button */
   .btn-generate {
@@ -214,7 +172,6 @@ function renderHTML(modelsJson: string): string {
       var(--bg);
   }
 
-  /* grid lines background */
   .canvas::before {
     content: '';
     position: absolute;
@@ -340,7 +297,6 @@ function renderHTML(modelsJson: string): string {
     font-size: 12px;
   }
 
-  /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
@@ -373,7 +329,11 @@ function renderHTML(modelsJson: string): string {
 
       <div>
         <label>Model</label>
-        <div class="model-list" id="model-list"></div>
+        <div class="model-badge">
+          <span class="dot"></span>
+          <strong>FLUX.1 Schnell</strong>
+          <span>· Free · Fast</span>
+        </div>
       </div>
 
       <button class="btn-generate" id="btn-gen" onclick="generate()">
@@ -384,23 +344,19 @@ function renderHTML(modelsJson: string): string {
     <!-- Canvas -->
     <div class="canvas">
       <div class="output-wrap">
-        <!-- Placeholder -->
         <div class="placeholder" id="placeholder">
           <div class="placeholder-icon">✦</div>
           <h2>Your image will appear here</h2>
-          <p>Enter a prompt and pick a model to get started. Free-tier models run on 10k neurons/day.</p>
+          <p>Enter a prompt and hit generate. Powered by FLUX.1 Schnell on Workers AI.</p>
         </div>
 
-        <!-- Spinner -->
         <div class="spinner" id="spinner">
           <div class="spin-ring"></div>
-          <span id="spinner-label">Generating…</span>
+          <span>Generating…</span>
         </div>
 
-        <!-- Error -->
         <div class="error-box" id="error-box"></div>
 
-        <!-- Result -->
         <img id="result-img" alt="Generated image" />
         <div class="result-meta" id="result-meta">
           <span id="meta-text"></span>
@@ -412,34 +368,6 @@ function renderHTML(modelsJson: string): string {
 </div>
 
 <script>
-const MODELS = ${modelsJson};
-let selectedModel = MODELS[0].id;
-let genStart = 0;
-
-// Render model cards
-(function buildModelList() {
-  const list = document.getElementById('model-list');
-  MODELS.forEach((m, i) => {
-    const card = document.createElement('label');
-    card.className = 'model-card' + (i === 0 ? ' selected' : '');
-    card.innerHTML = \`
-      <input type="radio" name="model" value="\${m.id}" \${i === 0 ? 'checked' : ''} />
-      <div class="model-header">
-        <span class="model-name">\${m.label}</span>
-        <span class="model-tag" style="color:\${m.tagColor};border-color:\${m.tagColor}40">\${m.tag}</span>
-      </div>
-      <div class="model-note">\${m.note}</div>
-    \`;
-    card.addEventListener('click', () => {
-      document.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
-      card.classList.add('selected');
-      selectedModel = m.id;
-    });
-    list.appendChild(card);
-  });
-})();
-
-// Allow Ctrl+Enter to generate
 document.getElementById('prompt-input').addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') generate();
 });
@@ -451,7 +379,6 @@ async function generate() {
   const btn = document.getElementById('btn-gen');
   btn.disabled = true;
 
-  // Show spinner, hide others
   document.getElementById('placeholder').style.display = 'none';
   document.getElementById('result-img').style.display = 'none';
   document.getElementById('result-meta').style.display = 'none';
@@ -459,14 +386,13 @@ async function generate() {
 
   const spinner = document.getElementById('spinner');
   spinner.style.display = 'flex';
-  document.getElementById('spinner-label').textContent = 'Generating with ' + selectedModel.split('/').pop() + '…';
-  genStart = Date.now();
+  const genStart = Date.now();
 
   try {
     const res = await fetch('/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, model: selectedModel }),
+      body: JSON.stringify({ prompt }),
     });
 
     if (!res.ok) {
@@ -477,7 +403,6 @@ async function generate() {
     const blob = await res.blob();
     const elapsed = ((Date.now() - genStart) / 1000).toFixed(1);
 
-    // Convert to base64 data URL — works reliably for both display and download
     const dataUrl = await new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result);
@@ -490,13 +415,10 @@ async function generate() {
 
     const dlLink = document.getElementById('dl-link');
     dlLink.href = dataUrl;
-    dlLink.download = 'workers-ai-' + Date.now() + '.png';
+    dlLink.download = 'flux-' + Date.now() + '.png';
 
-    document.getElementById('meta-text').textContent =
-      selectedModel.split('/').slice(-1)[0] + ' · ' + elapsed + 's';
-
-    const meta = document.getElementById('result-meta');
-    meta.style.display = 'flex';
+    document.getElementById('meta-text').textContent = 'FLUX.1 Schnell · ' + elapsed + 's';
+    document.getElementById('result-meta').style.display = 'flex';
 
   } catch (err) {
     const box = document.getElementById('error-box');
@@ -520,37 +442,41 @@ export default {
 
     // ── GET / → serve UI ──────────────────────────────────────────────────
     if (request.method === "GET" && url.pathname === "/") {
-      return new Response(renderHTML(JSON.stringify(MODELS)), {
+      return new Response(renderHTML(), {
         headers: { "Content-Type": "text/html;charset=UTF-8" },
       });
     }
 
     // ── POST /generate → run inference ────────────────────────────────────
     if (request.method === "POST" && url.pathname === "/generate") {
-      let body: { prompt?: string; model?: string };
+      let body: { prompt?: string };
       try {
         body = await request.json();
       } catch {
         return new Response("Invalid JSON body", { status: 400 });
       }
 
-      const { prompt, model } = body;
+      const { prompt } = body;
 
       if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
         return new Response("prompt is required", { status: 400 });
       }
 
-      // Validate model is in our catalog
-      const validIds = MODELS.map((m) => m.id);
-      const modelId = validIds.includes(model ?? "") ? model! : MODELS[0].id;
-
       try {
         // @ts-expect-error – AI binding types vary across Wrangler versions
-        const result = await env.AI.run(modelId, { prompt: prompt.trim() });
+        const result = await env.AI.run(MODEL, { prompt: prompt.trim() });
 
-        // result is ReadableStream or ArrayBuffer depending on CF runtime
         let imageData: Uint8Array;
-        if (result instanceof ReadableStream) {
+
+        // FLUX.1 Schnell returns { image: "<base64>" }
+        if (result && typeof result === "object" && "image" in result && typeof (result as any).image === "string") {
+          const b64 = (result as any).image;
+          const binary = atob(b64);
+          imageData = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            imageData[i] = binary.charCodeAt(i);
+          }
+        } else if (result instanceof ReadableStream) {
           const reader = result.getReader();
           const chunks: Uint8Array[] = [];
           while (true) {
